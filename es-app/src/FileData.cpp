@@ -35,6 +35,13 @@
 #include "resources/TextureData.h"
 #include "views/gamelist/GameNameFormatter.h"
 #include "watchers/WatchersManager.h"
+#ifndef WIN32
+#include <cerrno>
+#include <cstdlib>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
+#endif
 
 using namespace Utils::Platform;
 
@@ -698,6 +705,97 @@ std::string FileData::getMessageFromExitCode(int exitCode)
 	return _("UKNOWN ERROR") + " : " + std::to_string(exitCode);
 }
 
+#ifndef WIN32
+static const char* const kRetrocadeMode = "/userdata/system/retrocade/mode";
+static const char* const kRetrocadePermit = "/run/retrocade-launch-permit";
+static const char* const kRetrocadeSelection = "/run/retrocade-selected-rom";
+static const char* const kRetrocadeLock = "/run/retrocade-agent.lock";
+
+// The agent trims only trailing newlines. "free\r" stays paid.
+static bool retrocadeReadTrimmed(const char* path, std::string& out)
+{
+	int fd = open(path, O_RDONLY);
+	if (fd < 0)
+		return false;
+
+	char buf[8192];
+	std::string data;
+	while (data.size() < sizeof(buf))
+	{
+		ssize_t n = read(fd, buf, sizeof(buf) - data.size());
+		if (n < 0)
+		{
+			close(fd);
+			return false;
+		}
+		if (n == 0)
+			break;
+		data.append(buf, buf + n);
+	}
+	close(fd);
+	while (!data.empty() && data.back() == '\n')
+		data.pop_back();
+	out.swap(data);
+	return true;
+}
+
+static bool retrocadeFreeMode()
+{
+	std::string mode;
+	return retrocadeReadTrimmed(kRetrocadeMode, mode) && mode == "free";
+}
+
+// A paid session holds this lock. Taking it here means no session is running.
+static bool retrocadeSessionActive()
+{
+	int fd = open(kRetrocadeLock, O_RDWR | O_CREAT, 0600);
+	if (fd < 0)
+		return false;
+
+	int rc = flock(fd, LOCK_EX | LOCK_NB);
+	bool active = rc != 0 && errno == EWOULDBLOCK;
+	if (rc == 0)
+		flock(fd, LOCK_UN);
+	close(fd);
+	return active;
+}
+
+static void retrocadeRequestQR(const std::string& rom)
+{
+	if (rom.empty() || rom.find('\n') != std::string::npos || rom.find('\r') != std::string::npos)
+		return;
+
+	char temp[] = "/run/retrocade-qr.XXXXXX";
+	int fd = mkstemp(temp);
+	if (fd < 0)
+		return;
+
+	std::string body = rom + "\n";
+	ssize_t written = write(fd, body.data(), body.size());
+	bool failed = written != (ssize_t)body.size() || close(fd) != 0;
+	if (failed || rename(temp, kRetrocadeSelection) != 0)
+		unlink(temp);
+}
+#endif
+
+bool FileData::allowRetrocadeLaunch() const
+{
+#ifdef WIN32
+	return true;
+#else
+	if (retrocadeFreeMode())
+		return true;
+
+	const std::string rom = getPath();
+	std::string allowed;
+	if (!rom.empty() && retrocadeReadTrimmed(kRetrocadePermit, allowed) && allowed == rom && retrocadeSessionActive())
+		return true;
+
+	retrocadeRequestQR(rom);
+	return false;
+#endif
+}
+
 bool FileData::launchGame(Window* window, LaunchGameOptions options)
 {
 	LOG(LogInfo) << "Attempting to launch game...";
@@ -708,6 +806,9 @@ bool FileData::launchGame(Window* window, LaunchGameOptions options)
 
 	SystemData* system = gameToUpdate->getSystem();
 	if (system == nullptr)
+		return false;
+
+	if (!allowRetrocadeLaunch())
 		return false;
 
 	std::string command = getlaunchCommand(options);

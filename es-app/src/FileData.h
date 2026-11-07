@@ -142,6 +142,8 @@ public:
 	std::string getlaunchCommand(LaunchGameOptions& options, bool includeControllers = true);
 
 	bool		launchGame(Window* window, LaunchGameOptions options = LaunchGameOptions());
+	// Paid mode without a matching permit writes the selection and refuses the launch.
+	bool		allowRetrocadeLaunch() const;
 
 	static void resetSettings();
 	

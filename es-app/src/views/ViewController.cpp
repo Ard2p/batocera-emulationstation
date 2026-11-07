@@ -525,6 +525,10 @@ static const int RETURN_HOLD = 250;
 
 void ViewController::launch(FileData* game, LaunchGameOptions options, Vector3f center, Vector2f targetSize, bool allowCheckLaunchOptions)
 {
+	// Refuse before the launch animation and the game splash. Menu and HTTP /launch both enter here.
+	if (game != nullptr && !game->allowRetrocadeLaunch())
+		return;
+
 	if (targetSize.x() <= 0 || targetSize.y() <= 0)
 	{
 		auto view = dynamic_cast<IGameListView*>(mCurrentView.get());
